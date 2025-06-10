@@ -42,15 +42,19 @@ Frame::~Frame()
   std::for_each(fts_.begin(), fts_.end(), [&](FeaturePtr i){i.reset();});
 }
 
+// 初始化图像帧
 void Frame::initFrame(const cv::Mat& img)
 {
+  // 检查图像格式
   // check image
   if(img.empty() || img.type() != CV_8UC1 || img.cols != cam_->width() || img.rows != cam_->height())
     throw std::runtime_error("Frame: provided image has not the same size as the camera model or image is not grayscale");
 
+  // 置空5个特征点
   // Set keypoints to nullptr
   std::for_each(key_pts_.begin(), key_pts_.end(), [&](FeaturePtr ftr){ ftr=nullptr; });
   
+  // 创建图像金字塔
   ImgPyr ().swap(img_pyr_);
   img_pyr_.push_back(img);
   // Build Image Pyramid
