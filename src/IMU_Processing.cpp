@@ -141,6 +141,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, StatesGroup &state_inout, in
   ROS_INFO("IMU Initializing: %.1f %%", double(N) / MAX_INI_COUNT * 100);
   V3D cur_acc, cur_gyr;
   
+  // 增量更新加速度和角速度的均值和协方差
   if (b_first_frame_)
   {
     Reset();
@@ -161,6 +162,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, StatesGroup &state_inout, in
     cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
     cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
 
+    // ???：这里和推导结果不太一样，应该是先更新协方差再更新均值
     mean_acc      += (cur_acc - mean_acc) / N;
     mean_gyr      += (cur_gyr - mean_gyr) / N;
 
@@ -608,6 +610,7 @@ void ImuProcess::Process(const LidarMeasureGroup &lidar_meas, StatesGroup &stat,
   // cout<<"[ IMU Process ]: Time: "<<t3 - t1<<endl;
 }
 
+// 完成滤波器的预测步并用于点云去畸变，和fast-lio基本一致
 void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_inout, PointCloudXYZI &pcl_out)
 {
   /*** add the imu of the last frame-tail to the of current frame-head ***/
@@ -659,6 +662,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   M3D R_imu(state_inout.rot_end);
   MD(DIM_STATE, DIM_STATE) F_x, cov_w;
   
+  // 正向传播，计算每个IMU点的预测状态
   double dt = 0;
   for (auto it_imu = v_imu.begin(); it_imu != v_imu.end()-1 ; it_imu++)
   {
@@ -771,6 +775,8 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   //   cout<<"Undistorted pcl_out.size: "<<pcl_out.size()
   //          <<"lidar_meas.size: "<<lidar_meas.lidar->points.size()<<endl;
   if (pcl_out.points.size() < 1) return;
+
+  // 反向传播，点云去畸变，计算每个点的实际位置，将点云转换至lidar_end_time时刻下
   /*** undistort each lidar point (backward propagation) ***/
   auto it_pcl = pcl_out.points.end() - 1;
   for (auto it_kp = IMUpose.end() - 1; it_kp != IMUpose.begin(); it_kp--)
@@ -815,6 +821,7 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
   ROS_ASSERT(lidar_meas.lidar != nullptr);
   MeasureGroup meas = lidar_meas.measures.back();
 
+  // 利用IMU数据初始化滤波器状态
   if (imu_need_init_)
   {
     if(meas.imu.empty()) {return;};
@@ -827,6 +834,7 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
 
     if (init_iter_num > MAX_INI_COUNT)
     {
+      // 补偿加速度计测量值与实际重力加速度之间的尺度差异
       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
       imu_need_init_ = false;
       ROS_INFO("IMU Initials: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\
