@@ -89,6 +89,10 @@ void LidarSelector::reset_grid()
     add_voxel_points_.reserve(length);
 }
 
+/**
+ * @brief 投影点对三维点的雅可比矩阵计算, slam14 p.220 (8.16)
+ * 
+ */
 void LidarSelector::dpi(V3D p, MD(2,3)& J) {
     const double x = p[0];
     const double y = p[1];
@@ -116,7 +120,14 @@ float LidarSelector::CheckGoodPoints(cv::Mat img, V2D uv)
     return fabs(gu)+fabs(gv);
 }
 
-// 从图像中提取指定位置的 patch，并进行插值
+/**
+ * @brief 从图像中提取指定位置的 patch，并进行插值
+ * 
+ * @param img 
+ * @param pc 
+ * @param patch_tmp 
+ * @param level 
+ */
 void LidarSelector::getpatch(cv::Mat img, V2D pc, float* patch_tmp, int level) 
 {
     const float u_ref = pc[0];
@@ -140,6 +151,12 @@ void LidarSelector::getpatch(cv::Mat img, V2D pc, float* patch_tmp, int level)
     }
 }
 
+/**
+ * @brief 将激光雷达点投影到当前帧的图像上，计算这些点的角点得分，并根据得分选择最佳点加入视觉地图
+ * 
+ * @param img 
+ * @param pg 
+ */
 void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg) 
 {
     // double t0 = omp_get_wtime();
@@ -148,6 +165,7 @@ void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
     // double t_b1 = omp_get_wtime() - t0;
     // t0 = omp_get_wtime();
     
+    // 遍历点云
     for (int i=0; i<pg->size(); i++) 
     {
         V3D pt(pg->points[i].x, pg->points[i].y, pg->points[i].z);
@@ -156,8 +174,10 @@ void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
         {
             int index = static_cast<int>(pc[0]/grid_size)*grid_n_height + static_cast<int>(pc[1]/grid_size);
             // float cur_value = CheckGoodPoints(img, pc);
+            // 计算当前点的角点得分
             float cur_value = vk::shiTomasiScore(img, pc[0], pc[1]);
 
+            // 每个网格取最大角点得分，以及对应的点
             if (cur_value > map_value[index]) //&& (grid_num[index] != TYPE_MAP || map_value[index]<=10)) //! only add in not occupied grid
             {
                 map_value[index] = cur_value;
@@ -180,6 +200,7 @@ void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
 
             PointPtr pt_new(new Point(pt));
             Vector3d f = cam->cam2world(pc);
+            // 地图点的特征：在图像上投影的像素坐标、点云方向向量、图像帧位姿、角点得分
             FeaturePtr ftr_new(new Feature(pc, f, new_frame_->T_f_w_, map_value[i], 0));
             ftr_new->img = new_frame_->img_pyr_[0];
             // ftr_new->ImgPyr.resize(5);
@@ -188,6 +209,7 @@ void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
 
             pt_new->addFrameRef(ftr_new);
             pt_new->value = map_value[i];
+            // 往相应的体素中添加地图点
             AddPoint(pt_new);
             add += 1;
         }
@@ -202,6 +224,11 @@ void LidarSelector::addSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
     // printf("B3. : %.6lf \n", t_b3);
 }
 
+/**
+ * @brief 往视觉地图的体素中添加新的点
+ * 
+ * @param pt_new 
+ */
 void LidarSelector::AddPoint(PointPtr pt_new)
 {
     V3D pt_w(pt_new->pos_[0], pt_new->pos_[1], pt_new->pos_[2]);
@@ -230,7 +257,19 @@ void LidarSelector::AddPoint(PointPtr pt_new)
     }
 }
 
-// 计算仿射矩阵的流程，只是添加了金字塔层级，但是也没用到，默认为0
+/**
+ * @brief 计算仿射矩阵的流程，只是添加了金字塔层级，但是也没用到，默认为0
+ * 
+ * @param cam 
+ * @param px_ref 
+ * @param f_ref 
+ * @param depth_ref 
+ * @param T_cur_ref 
+ * @param level_ref 
+ * @param pyramid_level 
+ * @param halfpatch_size 
+ * @param A_cur_ref 
+ */
 void LidarSelector::getWarpMatrixAffine(
     const vk::AbstractCamera& cam,
     const Vector2d& px_ref,
@@ -257,7 +296,18 @@ void LidarSelector::getWarpMatrixAffine(
   A_cur_ref.col(1) = (px_dv - px_cur)/halfpatch_size;
 }
 
-// 利用仿射变换矩阵将参考帧的patch变换到当前帧图像上，并计算变换后的像素值
+/**
+ * @brief 利用仿射变换矩阵将参考帧的patch变换到当前帧图像上，并计算变换后的像素值
+ * 
+ * @param A_cur_ref 
+ * @param img_ref 
+ * @param px_ref 
+ * @param level_ref 
+ * @param search_level 
+ * @param pyramid_level 
+ * @param halfpatch_size 
+ * @param patch 
+ */
 void LidarSelector::warpAffine(
     const Matrix2d& A_cur_ref,
     const cv::Mat& img_ref,
@@ -301,6 +351,14 @@ void LidarSelector::warpAffine(
   }
 }
 
+/**
+ * @brief 计算归一化互相关系数（NCC），用于衡量两个图像patch之间的相似度
+ * 
+ * @param ref_patch 
+ * @param cur_patch 
+ * @param patch_size 
+ * @return double 
+ */
 double LidarSelector::NCC(float* ref_patch, float* cur_patch, int patch_size)
 {    
     double sum_ref = std::accumulate(ref_patch, ref_patch + patch_size, 0.0);
@@ -320,7 +378,13 @@ double LidarSelector::NCC(float* ref_patch, float* cur_patch, int patch_size)
     return numerator / sqrt(demoniator1 * demoniator2 + 1e-10);
 }
 
-// 根据仿射变换矩阵的行列式确定最佳的金字塔搜索层级
+/**
+ * @brief 根据仿射变换矩阵的行列式确定最佳的金字塔搜索层级
+ * 
+ * @param A_cur_ref 
+ * @param max_level 
+ * @return int 
+ */
 int LidarSelector::getBestSearchLevel(
     const Matrix2d& A_cur_ref,
     const int max_level)
@@ -351,6 +415,13 @@ void LidarSelector::createPatchFromPatchWithBorder(float* patch_with_border, flo
 }
 #endif
 
+/**
+ * @brief  传入当前帧图像和上一帧的LIDAR点云，计算深度图以及点云对应的视觉点图体素，从体素中选择与当前帧观测角度最相近的观测作为参考帧，
+ *         然后计算参考帧与当前帧之间的affine变换，计算参考帧变换至当前帧对应的patch，最后计算这个patch和当前帧观测到的patch之间的像素误差
+ * 
+ * @param img 
+ * @param pg 
+ */
 void LidarSelector::addFromSparseMap(cv::Mat img, PointCloudXYZI::Ptr pg)
 {
     if(feat_map.size()<=0) return;
@@ -775,13 +846,21 @@ void LidarSelector::FeatureAlignment(cv::Mat img)
 }
 #endif
 
+/**
+ * @brief 利用光度误差更新状态
+ * 
+ * @param img 
+ * @param total_residual 
+ * @param level 
+ * @return float 
+ */
 float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level) 
 {
-    int total_points = sub_sparse_map->index.size();
+    int total_points = sub_sparse_map->index.size(); // 计算了误差的patch的size
     if (total_points==0) return 0.;
-    StatesGroup old_state = (*state);
+    StatesGroup old_state = (*state); // 旧状态
     V2D pc; 
-    MD(1,2) Jimg;
+    MD(1,2) Jimg; // 像素梯度
     MD(2,3) Jdpi;
     MD(1,3) Jdphi, Jdp, JdR, Jdt;
     VectorXd z;
@@ -791,7 +870,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
     float error=0.0, last_error=total_residual, patch_error=0.0, last_patch_error=0.0, propa_error=0.0;
     // MatrixXd H;
     bool z_init = true;
-    const int H_DIM = total_points * patch_size_total;
+    const int H_DIM = total_points * patch_size_total; // 所有patch的像素点总数，残差的维度
     
     // K.resize(H_DIM, H_DIM);
     z.resize(H_DIM);
@@ -824,6 +903,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
         for (i=0; i<sub_sparse_map->index.size(); i++) 
         {
             patch_error = 0.0;
+            // 确定当前金字塔层级
             int search_level = sub_sparse_map->search_levels[i];
             int pyramid_level = level + search_level;
             const int scale =  (1<<pyramid_level);
@@ -832,12 +912,12 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
 
             if(pt==nullptr) continue;
 
-            V3D pf = Rcw * pt->pos_ + Pcw;
-            pc = cam->world2cam(pf);
+            V3D pf = Rcw * pt->pos_ + Pcw; // 当前帧相机系下的地图点三维坐标
+            pc = cam->world2cam(pf); // 当前帧下的patch中心像素坐标
             // if((level==2 && iteration==0) || (level==1 && iteration==0) || level==0)
             {
-                dpi(pf, Jdpi);
-                p_hat << SKEW_SYM_MATRX(pf);
+                dpi(pf, Jdpi); // ∂u/∂q
+                p_hat << SKEW_SYM_MATRX(pf); // ∂q/∂φ，对SE3李代数旋转部分的雅克比
             }
             const float u_ref = pc[0];
             const float v_ref = pc[1];
@@ -858,18 +938,25 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
                 {
                     // if((level==2 && iteration==0) || (level==1 && iteration==0) || level==0)
                     //{
+                    // 先用双线性插值计算像素，然后使用中值差分计算像素梯度
                     float du = 0.5f * ((w_ref_tl*img_ptr[scale] + w_ref_tr*img_ptr[scale*2] + w_ref_bl*img_ptr[scale*width+scale] + w_ref_br*img_ptr[scale*width+scale*2])
                                 -(w_ref_tl*img_ptr[-scale] + w_ref_tr*img_ptr[0] + w_ref_bl*img_ptr[scale*width-scale] + w_ref_br*img_ptr[scale*width]));
                     float dv = 0.5f * ((w_ref_tl*img_ptr[scale*width] + w_ref_tr*img_ptr[scale+scale*width] + w_ref_bl*img_ptr[width*scale*2] + w_ref_br*img_ptr[width*scale*2+scale])
                                 -(w_ref_tl*img_ptr[-scale*width] + w_ref_tr*img_ptr[-scale*width+scale] + w_ref_bl*img_ptr[0] + w_ref_br*img_ptr[scale]));
                     Jimg << du, dv;
-                    Jimg = Jimg * (1.0/scale);
-                    Jdphi = Jimg * Jdpi * p_hat;
-                    Jdp = -Jimg * Jdpi;
-                    JdR = Jdphi * Jdphi_dR + Jdp * Jdp_dR;
-                    Jdt = Jdp * Jdp_dt;
+                    Jimg = Jimg * (1.0/scale); // 像素梯度除以缩放比例
+                    // 对SE3李代数的雅克比 ∂e/∂[p φ] slam14 p.220 (8.15)
+                    Jdphi = Jimg * Jdpi * p_hat; // ∂e/∂φ
+                    Jdp = -Jimg * Jdpi; // ∂e/∂ρ 
+                    //! 从对相机系下的SE3(T_cw)的雅克比转成IMU系下SO3+R3(R_wi+t_wi)的雅克比
+                    //! 这里的 ∂φ/∂R、 ∂ρ/∂R、∂ρ/∂t 和实际推导结果差了个负号
+                    JdR = Jdphi * Jdphi_dR + Jdp * Jdp_dR; // ∂e/∂R = ∂e/∂φ * ∂φ/∂R + ∂e/∂ρ * ∂ρ/∂R
+                    Jdt = Jdp * Jdp_dt; // ∂e/∂t = ∂e/∂ρ * ∂ρ/∂t
                     //}
+
+                    // 计算当前像素点的误差，当前帧-参考帧
                     double res = w_ref_tl*img_ptr[0] + w_ref_tr*img_ptr[scale] + w_ref_bl*img_ptr[scale*width] + w_ref_br*img_ptr[scale*width+scale]  - P[patch_size_total*level + x*patch_size+y];
+                    // 保存残差
                     z(i*patch_size_total+x*patch_size+y) = res;
                     // float weight = 1.0;
                     // if(iteration > 0)
@@ -879,6 +966,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
                     n_meas_++;
                     // H.block<1,6>(i*patch_size_total+x*patch_size+y,0) << JdR*weight, Jdt*weight;
                     // if((level==2 && iteration==0) || (level==1 && iteration==0) || level==0)
+                    // 保存雅克比
                     H_sub.block<1,6>(i*patch_size_total+x*patch_size+y,0) << JdR, Jdt;
                 }
             }  
@@ -893,6 +981,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
 
         // double t3 = omp_get_wtime();
 
+        // 上一次优化有效就继续优化，否则取回上一次状态结束优化
         if (error <= last_error) 
         {
             old_state = (*state);
@@ -905,6 +994,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
 
             auto &&H_sub_T = H_sub.transpose();
             H_T_H.block<6,6>(0,0) = H_sub_T * H_sub;
+            // 类似fast-lio的K计算方式
             MD(DIM_STATE, DIM_STATE) &&K_1 = (H_T_H + (state->cov / img_point_cov).inverse()).inverse();
             auto &&HTz = H_sub_T * z;
             // K = K_1.block<DIM_STATE,6>(0,0) * H_sub_T;
@@ -915,6 +1005,7 @@ float LidarSelector::UpdateState(cv::Mat img, float total_residual, int level)
             auto &&rot_add = solution.block<3,1>(0,0);
             auto &&t_add   = solution.block<3,1>(3,0);
 
+            // 状态增量较小时结束优化
             if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f))
             {
                 EKF_end = true;
@@ -945,6 +1036,11 @@ void LidarSelector::updateFrameState(StatesGroup state)
     new_frame_->T_f_w_ = SE3(Rcw, Pcw);
 }
 
+/**
+ * @brief 将地图点在当前帧下的观测与地图点进行关联
+ * 
+ * @param img 
+ */
 void LidarSelector::addObservation(cv::Mat img)
 {
     int total_points = sub_sparse_map->index.size();
@@ -957,6 +1053,7 @@ void LidarSelector::addObservation(cv::Mat img)
         V2D pc(new_frame_->w2c(pt->pos_));
         SE3 pose_cur = new_frame_->T_f_w_;
         bool add_flag = false;
+        // 筛选条件：当前帧与地图点的上一次观测的位姿差和投影点的像素差大于阈值
         // if (sub_sparse_map->errors[i]<= 100*patch_size_total && sub_sparse_map->errors[i]>0)
         {
             //TODO: condition: distance and view_angle 
@@ -999,6 +1096,11 @@ void LidarSelector::addObservation(cv::Mat img)
     }
 }
 
+/**
+ * @brief 计算光度误差对状态的雅可比矩阵，并更新状态
+ * 
+ * @param img 
+ */
 void LidarSelector::ComputeJ(cv::Mat img) 
 {
     int total_points = sub_sparse_map->index.size();
@@ -1006,10 +1108,12 @@ void LidarSelector::ComputeJ(cv::Mat img)
     float error = 1e10;
     float now_error = error;
 
+    // 金字塔从高到低，依次利用光度误差更新状态
     for (int level=2; level>=0; level--) 
     {
         now_error = UpdateState(img, error, level);
     }
+    // 结束迭代时，更新协方差
     if (now_error < error)
     {
         state->cov -= G*state->cov;
@@ -1017,10 +1121,16 @@ void LidarSelector::ComputeJ(cv::Mat img)
     updateFrameState(*state);
 }
 
+/**
+ * @brief 在当前帧图像上显示关tracking的地图点
+ * 
+ * @param time 
+ */
 void LidarSelector::display_keypatch(double time)
 {
     int total_points = sub_sparse_map->index.size();
     if (total_points==0) return;
+    // 误差小的点用绿色显示，误差大的点用蓝色显示
     for(int i=0; i<total_points; i++)
     {
         PointPtr pt = sub_sparse_map->voxel_points[i];
@@ -1059,7 +1169,12 @@ V3F LidarSelector::getpixel(cv::Mat img, V2D pc)
     return pixel;
 }
 
-// 处理当前帧的图像和上一帧的点云数据
+/**
+ * @brief 处理当前帧的图像和上一帧的点云数据
+ * 
+ * @param img 
+ * @param pg 
+ */
 void LidarSelector::detect(cv::Mat img, PointCloudXYZI::Ptr pg) 
 {
     if(width!=img.cols || height!=img.rows)
@@ -1083,20 +1198,24 @@ void LidarSelector::detect(cv::Mat img, PointCloudXYZI::Ptr pg)
 
     double t1 = omp_get_wtime();
 
+    // 根据上一帧点云数据从地图中找相近的体素点，将其中地图点投影到当前帧和参考帧图像上，并计算误差
     addFromSparseMap(img, pg);
 
     double t3 = omp_get_wtime();
 
+    // 将点云添加到视觉地图中
     addSparseMap(img, pg);
 
     double t4 = omp_get_wtime();
     
     // computeH = ekf_time = 0.0;
     
+    // 滤波器迭代更新状态
     ComputeJ(img);
 
     double t5 = omp_get_wtime();
 
+    // 给地图点添加当前帧的观测
     addObservation(img);
     
     double t2 = omp_get_wtime();
@@ -1107,6 +1226,7 @@ void LidarSelector::detect(cv::Mat img, PointCloudXYZI::Ptr pg)
     printf("[ VIO ]: time: addFromSparseMap: %.6f addSparseMap: %.6f ComputeJ: %.6f addObservation: %.6f total time: %.6f ave_total: %.6f.\n"
     , t3-t1, t4-t3, t5-t4, t2-t5, t2-t1, ave_total);
 
+    // 在图像上显示地图点，用于显示
     display_keypatch(t2-t1);
 } 
 

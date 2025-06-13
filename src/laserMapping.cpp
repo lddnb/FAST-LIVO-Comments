@@ -1663,6 +1663,7 @@ int main(int argc, char** argv)
                     Hsub.row(i) << VEC_FROM_ARRAY(A), norm_p.x, norm_p.y, norm_p.z;
 
                     /*** Measuremnt: distance to the closest surface/corner ***/
+                    //! 这里用的是负值，所以后面在计算增量δx时，用的是Kz而非推导中的-Kz
                     meas_vec(i) = - norm_p.intensity;
                 }
                 solve_const_H_time += omp_get_wtime() - solve_start;
