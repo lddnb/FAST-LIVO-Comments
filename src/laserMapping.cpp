@@ -357,6 +357,10 @@ BoxPointType get_cube_point(float xmin, float ymin, float zmin, float xmax, floa
     return cube_points;
 }
 
+/**
+ * @brief 根据当前位姿调整ikdtree的地图范围
+ * 
+ */
 #ifndef USE_ikdforest
 BoxPointType LocalMap_Points;
 bool Localmap_Initialized = false;
@@ -710,6 +714,10 @@ bool sync_packages(LidarMeasureGroup &meas)
     // lidar_pushed = false;
 }
 
+/**
+ * @brief 往ikdtree中添加当前帧的点云
+ * 
+ */
 void map_incremental()
 {
     for (int i = 0; i < feats_down_size; i++)
@@ -726,8 +734,14 @@ void map_incremental()
 #endif
 }
 
+/**
+ * @brief 发布RGB点云，没RGB信息时发布普通点云
+ * 
+ * @param pubLaserCloudFullRes 
+ * @param lidar_selector 
+ */
 // PointCloudXYZRGB::Ptr pcl_wait_pub_RGB(new PointCloudXYZRGB(500000, 1));
-PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI());
+PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI()); // 上一帧world系下的点云
 void publish_frame_world_rgb(const ros::Publisher & pubLaserCloudFullRes, lidar_selection::LidarSelectorPtr lidar_selector)
 {
     // PointCloudXYZI::Ptr laserCloudFullRes(dense_map_en ? feats_undistort : feats_down_body);
@@ -756,6 +770,7 @@ void publish_frame_world_rgb(const ros::Publisher & pubLaserCloudFullRes, lidar_
             V3D pf(lidar_selector->new_frame_->w2f(p_w));
             if (pf[2] < 0) continue;
             V2D pc(lidar_selector->new_frame_->w2c(p_w));
+            // 根据当前帧位姿将点云投影到图像平面获取对应像素的RGB
             if (lidar_selector->new_frame_->cam_->isInFrame(pc.cast<int>(),0))
             {
                 V3F pixel = lidar_selector->getpixel(img_rgb, pc);
@@ -861,6 +876,12 @@ void publish_visual_world_map(const ros::Publisher & pubVisualCloud)
     // mtx_buffer_pointcloud.unlock();
 }
 
+/**
+ * @brief 发布当前帧tracking的点图点
+ * 
+ * @param pubSubVisualCloud 
+ */
+
 void publish_visual_world_sub_map(const ros::Publisher & pubSubVisualCloud)
 {
     PointCloudXYZI::Ptr laserCloudFullRes(sub_map_cur_frame_point);
@@ -933,6 +954,11 @@ void set_posestamp(T & out)
     out.orientation.w = geoQuat.w;
 }
 
+/**
+ * @brief 发布里程计信息
+ * 
+ * @param pubOdomAftMapped 
+ */
 void publish_odometry(const ros::Publisher & pubOdomAftMapped)
 {
     odomAftMapped.header.frame_id = "camera_init";
@@ -1395,6 +1421,8 @@ int main(int argc, char** argv)
                 //     temp_map.intensity = 0.;
                 //     map_cur_frame_point->push_back(temp_map);
                 // }
+                
+                // 提取当前帧图像在vio中tracking的地图点，用于显示
                 for(int i=0; i<size_sub; i++)
                 {
                     PointType temp_map;
@@ -1404,6 +1432,7 @@ int main(int argc, char** argv)
                     temp_map.intensity = 0.;
                     sub_map_cur_frame_point->push_back(temp_map);
                 }
+                // 在当前帧图像上显示vio跟踪的地图点，用于显示
                 cv::Mat img_rgb = lidar_selector->img_cp;
                 cv_bridge::CvImage out_msg;
                 out_msg.header.stamp = ros::Time::now();
@@ -1412,6 +1441,7 @@ int main(int argc, char** argv)
                 out_msg.image = img_rgb;
                 img_pub.publish(out_msg.toImageMsg());
 
+                // 发布RGB和tracking的地图点的点云
                 if(img_en) publish_frame_world_rgb(pubLaserCloudFullRes, lidar_selector);
                 publish_visual_world_sub_map(pubSubVisualCloud);
                 
@@ -1428,10 +1458,12 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // 调整ikdtree地图范围
         /*** Segment the map in lidar FOV ***/
         #ifndef USE_ikdforest            
             lasermap_fov_segment();
         #endif
+        // 点云降采样
         /*** downsample the feature points in a scan ***/
         downSizeFilterSurf.setInputCloud(feats_undistort);
         downSizeFilterSurf.filter(*feats_down_body);
@@ -1446,6 +1478,7 @@ int main(int argc, char** argv)
         }
         int featsFromMapNum = ikdforest.total_size;
         #else
+        // 初始化ikdtree
         if(ikdtree.Root_Node == nullptr)
         {
             if(feats_down_body->points.size() > 5)
@@ -1604,13 +1637,17 @@ int main(int argc, char** argv)
                     // }
                     if (!point_selected_surf[i] || points_near.size() < NUM_MATCH_POINTS) continue;
 
+                    // 从 kdtree 中找5个当前点的最近邻点，用于拟合平面
                     VF(4) pabcd;
                     point_selected_surf[i] = false;
                     if (esti_plane(pabcd, points_near, 0.1f)) //(planeValid)
                     {
+                        // 计算当前点到平面的距离
                         float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
+                        // 计算评分，要求点面距离足够小，以及点在雷达系下的测距距离足够大
                         float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
 
+                        // 满足条件则保存该点作为一个残差
                         if (s > 0.9)
                         {
                             point_selected_surf[i] = true;
@@ -1642,6 +1679,7 @@ int main(int argc, char** argv)
                 match_time  += omp_get_wtime() - match_start;
                 solve_start  = omp_get_wtime();
                 
+                // 计算测量雅克比矩阵H
                 /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
                 MatrixXd Hsub(effct_feat_num, 6);
                 VectorXd meas_vec(effct_feat_num);
@@ -1656,9 +1694,12 @@ int main(int argc, char** argv)
 
                     /*** get the normal vector of closest surface/corner ***/
                     const PointType &norm_p = corr_normvect->points[i];
+                    //! H(p) = n^T
                     V3D norm_vec(norm_p.x, norm_p.y, norm_p.z);
 
+                    //! H(R) = -n^T * Rp^
                     /*** calculate the Measuremnt Jacobian matrix H ***/
+                    //! 这里用的用推导形式的转置
                     V3D A(point_crossmat * state.rot_end.transpose() * norm_vec);
                     Hsub.row(i) << VEC_FROM_ARRAY(A), norm_p.x, norm_p.y, norm_p.z;
 
@@ -1683,23 +1724,28 @@ int main(int argc, char** argv)
                     H_init.block<3,3>(0,0)  = M3D::Identity();
                     H_init.block<3,3>(3,3)  = M3D::Identity();
                     H_init.block<3,3>(6,15) = M3D::Identity();
+                    //! 用的 -z
                     z_init.block<3,1>(0,0)  = - Log(state.rot_end);
                     z_init.block<3,1>(0,0)  = - state.pos_end;
 
                     auto H_init_T = H_init.transpose();
+                    //! K = PH^T·(HPH^T + R)^-1
                     auto &&K_init = state.cov * H_init_T * (H_init * state.cov * H_init_T + \
                                     0.0001 * MD(9, 9)::Identity()).inverse();
+                    //! delta x = K(z - Hx)
                     solution      = K_init * z_init;
 
                     // solution.block<9,1>(0,0).setZero();
                     // state += solution;
                     // state.cov = (MatrixXd::Identity(DIM_STATE, DIM_STATE) - K_init * H_init) * state.cov;
 
+                    //! 上面算的东西其实都没用到，这里直接将状态量重置
                     state.resetpose();
                     EKF_stop_flg = true;
                 }
                 else
                 {
+                    // 和视觉部分的滤波器类似
                     auto &&Hsub_T = Hsub.transpose();
                     auto &&HTz = Hsub_T * meas_vec;
                     H_T_H.block<6,6>(0,0) = Hsub_T * Hsub;
@@ -1735,6 +1781,7 @@ int main(int argc, char** argv)
                 euler_cur = RotMtoEuler(state.rot_end);
                 
 
+                // 当滤波器收敛时，重新搜索近邻点来拟合平面
                 /*** Rematch Judgement ***/
                 nearest_search_en = false;
                 if (flg_EKF_converged || ((rematch_num == 0) && (iterCount == (NUM_MAX_ITERATIONS - 2))))
@@ -1748,6 +1795,7 @@ int main(int argc, char** argv)
                 {
                     if (flg_EKF_inited)
                     {
+                        // 更新协方差
                         /*** Covariance Update ***/
                         // G.setZero();
                         // G.block<DIM_STATE,6>(0,0) = K * Hsub;
@@ -1803,6 +1851,7 @@ int main(int argc, char** argv)
         int size = laserCloudFullRes->points.size();
         PointCloudXYZI::Ptr laserCloudWorld( new PointCloudXYZI(size, 1));
 
+        // 转到世界坐标系
         for (int i = 0; i < size; i++)
         {
             RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
@@ -1810,6 +1859,7 @@ int main(int argc, char** argv)
         }
         *pcl_wait_pub = *laserCloudWorld;
 
+        // 发布点云以及路径
         if(!img_en) publish_frame_world(pubLaserCloudFullRes);
         // publish_visual_world_map(pubVisualCloud);
         publish_effect_world(pubLaserCloudEffect);
